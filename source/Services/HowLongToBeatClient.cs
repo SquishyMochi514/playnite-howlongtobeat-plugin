@@ -21,6 +21,8 @@ using System.Reflection;
 using AngleSharp.Dom;
 using CommonPluginsShared.Converters;
 using CommonPluginsShared.Extensions;
+using System.Text;
+using System.Web;
 
 namespace HowLongToBeat.Services
 {
@@ -165,7 +167,7 @@ namespace HowLongToBeat.Services
         public List<HltbDataUser> Search(string Name, string Platform = "")
         {
             string data = GameSearch(Name, Platform).GetAwaiter().GetResult();
-            List<HltbDataUser> dataParsed = SearchParser(data);
+            List<HltbDataUser> dataParsed = SearchParser(Serialization.FromJson<dynamic>(data));
             return dataParsed;
         }
 
@@ -175,23 +177,82 @@ namespace HowLongToBeat.Services
         /// <param name="Name"></param>
         /// <returns></returns>
         private async Task<string> GameSearch(string Name, string Platform = "")
-        { 
+        {
             try
             {
-                FormUrlEncodedContent content = new FormUrlEncodedContent(new[]
-                {
-                    new KeyValuePair<string, string>("queryString", Name),
-                    new KeyValuePair<string, string>("t", "games"),
-                    new KeyValuePair<string, string>("sorthead", "popular"),
-                    new KeyValuePair<string, string>("sortd", "Normal Order"),
-                    new KeyValuePair<string, string>("plat", Platform),
-                    new KeyValuePair<string, string>("length_type", "main"),
-                    new KeyValuePair<string, string>("length_min", string.Empty),
-                    new KeyValuePair<string, string>("length_max", string.Empty),
-                    new KeyValuePair<string, string>("detail", "0")
-                });
+                List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
-                return await Web.PostStringDataCookies(UrlSearch, content);
+                dynamic content = new {
+                    searchType = "games",
+                    searchTerms = Name.Split(' '),
+                    searchPage= 1,
+                    size=20,
+                    searchOptions = new {games= new {userId = 398503, platform=Platform,sortCategory= "popular", rangeCategory="main",rangeTime= new {min=0,max=0},gameplay=new {perspective= "",flow="",genre=""},modifier=""},users= new{sortCategory= "postcount"},filter="",sort=0,randomizer=0}};
+
+
+                var response = string.Empty;
+
+                HttpClientHandler handler = new HttpClientHandler();
+                if (Cookies != null)
+                {
+                    CookieContainer cookieContainer = new CookieContainer();
+
+                    foreach (var cookie in Cookies)
+                    {
+                        Cookie c = new Cookie();
+                        c.Name = cookie.Name;
+                        c.Value = cookie.Value;
+                        c.Domain = cookie.Domain;
+                        c.Path = cookie.Path;
+
+                        try
+                        {
+                            cookieContainer.Add(c);
+                        }
+                        catch (Exception ex)
+                        {
+                            Common.LogError(ex, true);
+                        }
+                    }
+
+                    handler.CookieContainer = cookieContainer;
+                }
+
+                using (var client = new HttpClient(handler))
+                {
+                    client.DefaultRequestHeaders.Add("User-Agent", Web.UserAgent);
+                    client.DefaultRequestHeaders.Add("accept", "application/json, text/javascript, */*; q=0.01");
+                    client.DefaultRequestHeaders.Add("referer", "https://howlongtobeat.com/user/"+UserLogin+"?q="+ HttpUtility.UrlEncode(Name)+"Accept-Encoding");
+                    HttpContent c = new StringContent(Serialization.ToJson(content), Encoding.UTF8, "application/json");
+
+                    HttpResponseMessage result;
+                    var url = "https://howlongtobeat.com/api/search";
+                    try
+                    {
+                        result = await client.PostAsync(url, c).ConfigureAwait(false);
+                        if (result.IsSuccessStatusCode)
+                        {
+                            response = await result.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            logger.Error($"Web error with status code {result.StatusCode.ToString()}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Common.LogError(ex, false, $"Error on Post {url}");
+                    }
+                }
+
+                //settings.HttpWebRequest.UseUnsafeHeaderParsing = defaultValue;
+                //config.Save(ConfigurationSaveMode.Modified);
+                //ConfigurationManager.RefreshSection("system.net/settings");
+
+                return response;
+
+    
             }
             catch (Exception ex)
             {
@@ -228,130 +289,34 @@ namespace HowLongToBeat.Services
         /// </summary>
         /// <param name="data"></param>
         /// <returns></returns>
-        private List<HltbDataUser> SearchParser(string data)
+        private List<HltbDataUser> SearchParser(dynamic data)
         {
             List<HltbDataUser> ReturnData = new List<HltbDataUser>();
 
-            if (data != string.Empty)
-            {
-                try {
-                    HtmlParser parser = new HtmlParser();
-                    IHtmlDocument htmlDocument = parser.Parse(data);
+            if (data != null)
+            {              
 
-                    string Name = string.Empty;
-                    int Id = 0;
-                    string UrlImg = string.Empty;
-                    string Url = string.Empty;
-
-                    foreach (IElement SearchElement in htmlDocument.QuerySelectorAll("li.back_darkish"))
-                    {
-                        IElement ElementA = SearchElement.QuerySelector(".search_list_image a");
-                        IElement ElementImg = SearchElement.QuerySelector(".search_list_image a img");
-                        Name = WebUtility.HtmlDecode(ElementA.GetAttribute("title"));
-                        Id = int.Parse(ElementA.GetAttribute("href").Replace("game?id=", string.Empty));
-                        UrlImg = ElementImg.GetAttribute("src");
-                        Url = ElementA.GetAttribute("href");
-
-                        if (!UrlImg.ToLower().Contains(UrlBase.ToLower()))
+                        foreach (var title in data.data)
                         {
-                            if (UrlImg.Substring(0, 1) == "/")
+                            ReturnData.Add(new HltbDataUser
                             {
-                                UrlImg = UrlImg.Substring(1, UrlImg.Length - 1);
-                            }
-
-                            UrlImg = UrlBase + UrlImg;
-                        }
-                        if (!Url.ToLower().Contains(UrlBase.ToLower()))
-                        {
-                            Url = UrlBase + Url;
-                        }
-
-                        IElement ElementDetails = SearchElement.QuerySelector(".search_list_details_block");
-                        IHtmlCollection<IElement> Details = ElementDetails.QuerySelectorAll(".search_list_tidbit");
-                        if (Details.Length == 0)
-                        {
-                            Details = ElementDetails.QuerySelectorAll("div");
-                        }
-
-                        long MainStory = 0;
-                        long MainExtra = 0;
-                        long Completionist = 0;
-                        long Solo = 0;
-                        long CoOp = 0;
-                        long Vs = 0;
-
-                        bool IsMainStory = true;
-                        bool IsMainExtra = true;
-                        bool IsCompletionist = true;
-                        bool IsCoOp = true;
-                        bool IsVs = true;
-                        bool IsSolo = true;
-
-                        int iElement = 0;
-                        foreach (IElement El in Details)
-                        {
-                            if (iElement % 2 == 0)
-                            {
-                                IsMainStory = (El.InnerHtml == "Main Story");
-                                IsMainExtra = (El.InnerHtml == "Main + Extra");
-                                IsCompletionist = (El.InnerHtml == "Completionist");
-                                IsCoOp = (El.InnerHtml == "Co-Op");
-                                IsVs = (El.InnerHtml == "Vs.");
-                                IsSolo = (El.InnerHtml == "Solo");
-                            }
-                            else
-                            {
-                                if (IsMainStory)
+                                Name = title.game_name,
+                                Id = title.game_id,
+                                UrlImg = $"https://howlongtobeat.com/games/"+title.game_image+"?width=250",
+                                Url = "https://howlongtobeat.com/games/"+ title.game_id,
+                                GameHltbData = new HltbData
                                 {
-                                    MainStory = ConvertStringToLong(El.InnerHtml);
+                                    MainStory = title.comp_lvl_combine == 0?title.comp_main:0,
+                                    MainExtra = title.comp_lvl_combine == 0 ? title.comp_plus:0,
+                                    Completionist = title.comp_lvl_combine == 0 ? title.comp_100:0,                                   
+                                    Solo = (title.comp_lvl_combine == 1 && title.comp_lvl_sp == 1)? title.comp_all : 0,
+                                    CoOp = (title.comp_lvl_combine == 1 && title.comp_lvl_co == 1) ? title.invested_co : 0,
+                                    Vs = (title.comp_lvl_combine == 1 && title.comp_lvl_mp == 1) ? title.invested_mp : 0,
                                 }
-                                if (IsMainExtra)
-                                {
-                                    MainExtra = ConvertStringToLong(El.InnerHtml);
-                                }
-                                if (IsCompletionist)
-                                {
-                                    Completionist = ConvertStringToLong(El.InnerHtml);
-                                }
-                                if (IsCoOp)
-                                {
-                                    CoOp = ConvertStringToLong(El.InnerHtml);
-                                }
-                                if (IsVs)
-                                {
-                                    Vs = ConvertStringToLong(El.InnerHtml);
-                                }
-                                if (IsSolo)
-                                {
-                                    Solo = ConvertStringToLong(El.InnerHtml);
-                                }
-                            }
-
-                            iElement += 1;
-                        }
-
-                        ReturnData.Add(new HltbDataUser
-                        {
-                            Name = Name,
-                            Id = Id,
-                            UrlImg = UrlImg,
-                            Url = Url,
-                            GameHltbData = new HltbData
-                            {
-                                MainStory = MainStory,
-                                MainExtra = MainExtra,
-                                Completionist = Completionist,
-                                Solo = Solo,
-                                CoOp = CoOp,
-                                Vs = Vs
-                            }
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Common.LogError(ex, false, true, PluginDatabase.PluginName);
-                }
+                            });
+                        }                       
+                    
+               
             }
 
             return ReturnData;
@@ -393,9 +358,9 @@ namespace HowLongToBeat.Services
                 {
                     Common.LogDebug(true, $"NavigationChanged - {WebView.GetCurrentAddress()}");
 
-                    if (WebView.GetCurrentAddress().StartsWith("https://howlongtobeat.com/user?n="))
+                    if (WebView.GetCurrentAddress().StartsWith("https://howlongtobeat.com/user/"))
                     {
-                        UserLogin = WebUtility.HtmlDecode(WebView.GetCurrentAddress().Replace("https://howlongtobeat.com/user?n=", string.Empty));
+                        UserLogin = WebUtility.HtmlDecode(WebView.GetCurrentAddress().Replace("https://howlongtobeat.com/user/", string.Empty));
                         IsConnected = true;
 
                         PluginDatabase.PluginSettings.Settings.UserLogin = UserLogin;
@@ -420,19 +385,7 @@ namespace HowLongToBeat.Services
                             PluginDatabase.Plugin.SavePluginSettings(PluginDatabase.PluginSettings.Settings);
 
                             Task.Run(() => {
-                                string url = @"https://howlongtobeat.com/submit?s=add";
-                                WebViewOffscreen.NavigateAndWait(url);
-
-                                HtmlParser parser = new HtmlParser();
-                                IHtmlDocument htmlDocument = parser.Parse(WebViewOffscreen.GetPageSource());
-
-                                var el = htmlDocument.QuerySelector("input[name=user_id]");
-                                if (el != null)
-                                {
-                                    string stringUserId = el.GetAttribute("value");
-                                    int.TryParse(stringUserId, out UserId);
-                                }
-
+                                UserId = GetUserId();
                                 HowLongToBeat.PluginDatabase.RefreshUserData();
                             });
                         }
@@ -473,11 +426,29 @@ namespace HowLongToBeat.Services
             return data;
         }
 
+        private int GetUserId()
+        {
+            try
+            {
+                List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();                        
+
+                string response = Web.DownloadStringData("https://howlongtobeat.com/api/user", Cookies).GetAwaiter().GetResult();
+                var t = Serialization.FromJson<dynamic>(response);
+                return t.data[0].user_id;
+            }
+            catch (Exception ex)
+            {
+                Common.LogError(ex, false, true, PluginDatabase.PluginName);
+                return 0;
+            }
+        }
+
         private string GetUserGamesList(bool WithDateUpdate = false)
         {
             try
             {
-                List<HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
                 Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
                 FormUrlEncodedContent formContent;
@@ -517,7 +488,7 @@ namespace HowLongToBeat.Services
         {
             try
             {
-                List<HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
                 Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
                 FormUrlEncodedContent formContent = new FormUrlEncodedContent(new[]
@@ -741,7 +712,7 @@ namespace HowLongToBeat.Services
             logger.Info($"GetSubmitData({GameName}, {UserGameId})");
             try
             {
-                List<HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
                 Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
                 string response = Web.DownloadStringData(string.Format(UrlPostDataEdit, UserGameId), Cookies).GetAwaiter().GetResult();
@@ -1293,7 +1264,7 @@ namespace HowLongToBeat.Services
                     }
                     
 
-                    List<HttpCookie> Cookies = WebViewOffscreen.GetCookies();
+                    List<Playnite.SDK.HttpCookie> Cookies = WebViewOffscreen.GetCookies();
                     Cookies = Cookies.Where(x => x != null && x.Domain != null && x.Domain.Contains("howlongtobeat", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
                     FormUrlEncodedContent formContent = new FormUrlEncodedContent(data);
