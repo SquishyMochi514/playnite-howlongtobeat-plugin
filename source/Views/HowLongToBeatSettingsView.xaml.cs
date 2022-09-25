@@ -52,6 +52,8 @@ namespace HowLongToBeat.Views
 
             InitializeComponent();
 
+            PluginDatabase.howLongToBeatClient.PropertyChanged += OnPropertyChanged;
+
             CheckAuthenticate();
 
             SetPlatforms(settings);
@@ -141,7 +143,7 @@ namespace HowLongToBeat.Views
 
             spSettings.Visibility = Visibility.Visible;
 
-            PluginDatabase.howLongToBeatClient.PropertyChanged += OnPropertyChanged;
+            
 
 
             PART_TTB.Source = BitmapExtensions.BitmapFromFile(Path.Combine(PluginDatabase.Paths.PluginPath, "Resources", "ttb.png"));
